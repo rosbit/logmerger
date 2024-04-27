@@ -10,6 +10,12 @@ import (
 	"time"
 )
 
+type chanHandler struct {
+	logFile string
+	fileHandler FnFileHandler
+	dontMerge bool
+}
+
 /**
  * The main process: monitor rootDir, handle files with ext with fileHandler, and merge them to daily files.
  * The process will loop forever until Stop() called.
@@ -19,6 +25,8 @@ func (lm *LogMerger) RunDir(rootDir string, ext string, fileHandler FnFileHandle
 }
 
 func (lm *LogMerger) runDir(rootDir string, ext string, fileHandler FnFileHandler, dontMerge bool) {
+	ch := lm.startDirFileHandlers()
+
 	for !lm.exit {
 		fileSystem := os.DirFS(rootDir)
 		fs.WalkDir(fileSystem, ".", func(path string, d fs.DirEntry, err error) error {
@@ -28,12 +36,31 @@ func (lm *LogMerger) runDir(rootDir string, ext string, fileHandler FnFileHandle
 			if !strings.HasSuffix(path, ext) {
 				return nil
 			}
-			lm.runPatternFile(p.Join(rootDir, path), fileHandler, dontMerge)
+			ch <- &chanHandler{
+				logFile: p.Join(rootDir, path),
+				fileHandler: fileHandler,
+				dontMerge: dontMerge,
+			}
 			return nil
 		})
 		time.Sleep(lm.sleepDuration)
 	}
+	close(ch)
 	log.Printf("[logmerger] I will exit\n")
+}
+
+func (lm *LogMerger) startDirFileHandlers() (chan *chanHandler)  {
+	const maxHandlers = 3
+
+	ch := make(chan *chanHandler, maxHandlers)
+	for i:=0; i<maxHandlers; i++ {
+		go func(lm *LogMerger, i int, ch <-chan *chanHandler) {
+			for h := range ch {
+				lm.runPatternFile(h.logFile, h.fileHandler, h.dontMerge)
+			}
+		}(lm, i, ch)
+	}
+	return ch
 }
 
 func (lm *LogMerger) runPatternFile(logFile string, fileHandler FnFileHandler, dontMerge bool) {
